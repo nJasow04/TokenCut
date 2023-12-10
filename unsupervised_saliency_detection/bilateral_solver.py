@@ -145,9 +145,14 @@ class BilateralSolver(object):
         xhat = self.grid.slice(yhat)
         return xhat
 
-def bilateral_solver_output(img_pth, target, sigma_spatial = 24, sigma_luma = 4, sigma_chroma = 4) : 
-    
-    reference = np.array(Image.open(img_pth).convert('RGB'))
+def bilateral_solver_output(img_pth, target, sigma_spatial = 24, sigma_luma = 4, sigma_chroma = 4, resize=None) : 
+    img_temp = Image.open(img_pth).convert('RGB') 
+    if resize is not None:
+        h = resize[0]
+        w = resize[1]
+        img_temp = img_temp.resize((w, h))
+        
+    reference = np.array(img_temp)
     h, w = target.shape
     confidence = np.ones((h, w)) * 0.999
     

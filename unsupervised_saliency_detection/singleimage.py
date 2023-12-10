@@ -26,11 +26,13 @@ ToTensor = transforms.Compose([
                                 transforms.Normalize((0.485, 0.456, 0.406),
                                                      (0.229, 0.224, 0.225)),])
 
-def get_tokencut_binary_map(img_pth, backbone,patch_size, tau) :
+def get_tokencut_binary_map(img_pth, backbone,patch_size, tau, resize) :
     I = Image.open(img_pth).convert('RGB')
-    I_resize, w, h, feat_w, feat_h = utils.resize_pil(I, patch_size)
+    # print(resize)
+    I_resize, w, h, feat_w, feat_h = utils.resize_pil(I, patch_size, resize)
 
     tensor = ToTensor(I_resize).unsqueeze(0).cuda()
+    # print(tensor.shape)
     feat = backbone(tensor)[0]
 
     seed, bipartition, eigvec = tokencut.ncut(feat, [feat_h, feat_w], [patch_size, patch_size], [h,w], tau)
@@ -48,7 +50,7 @@ def mask_color_compose(org, mask, mask_color = [173, 216, 230]) :
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 ## input / output dir
-parser.add_argument('--out-dir', type=str, help='output directory')
+parser.add_argument('--out-dir', type=str, default='Test', help='output directory')
 
 parser.add_argument('--vit-arch', type=str, default='small', choices=['base', 'small'], help='which architecture')
 
@@ -67,10 +69,11 @@ parser.add_argument('--sigma-chroma', type=float, default=8, help='sigma chroma 
 
 parser.add_argument('--dataset', type=str, default=None, choices=['ECSSD', 'DUTS', 'DUT', None], help='which dataset?')
 
-parser.add_argument('--nb-vis', type=int, default=100, choices=[1, 200], help='nb of visualization')
+parser.add_argument('--nb-vis', type=int, default=1, choices=[1, 200], help='nb of visualization') # default was 100
 
 parser.add_argument('--img-path', type=str, default=None, help='single image visualization')
 
+parser.add_argument('--resize', type=int, nargs='+', default=[256, 256], help='specify input resolution')
 
 args = parser.parse_args()
 print (args)
@@ -145,10 +148,11 @@ for img_name in tqdm(img_list) :
     else:
         img_pth = os.path.join(args.img_dir, img_name)
     
-    bipartition, eigvec = get_tokencut_binary_map(img_pth, backbone, args.patch_size, args.tau)
+    # print(img_pth)
+    bipartition, eigvec = get_tokencut_binary_map(img_pth, backbone, args.patch_size, args.tau, args.resize)
     mask_lost.append(bipartition)
 
-    output_solver, binary_solver = bilateral_solver.bilateral_solver_output(img_pth, bipartition, sigma_spatial = args.sigma_spatial, sigma_luma = args.sigma_luma, sigma_chroma = args.sigma_chroma)
+    output_solver, binary_solver = bilateral_solver.bilateral_solver_output(img_pth, bipartition, sigma_spatial = args.sigma_spatial, sigma_luma = args.sigma_luma, sigma_chroma = args.sigma_chroma, resize=args.resize)
     mask1 = torch.from_numpy(bipartition).cuda()
     mask2 = torch.from_numpy(binary_solver).cuda()
     if metric.IoU(mask1, mask2) < 0.5:
@@ -167,7 +171,15 @@ for img_name in tqdm(img_list) :
         #out_eigvec = os.path.join(args.out_dir, img_name.replace('.jpg', '_tokencut_eigvec.jpg'))
 
         copyfile(img_pth, out_name)
-        org = np.array(Image.open(img_pth).convert('RGB'))
+        # org = np.array(Image.open(img_pth).convert('RGB'))
+        
+        img_temp = Image.open(img_pth).convert('RGB') 
+        if args.resize is not None:
+            h = args.resize[0]
+            w = args.resize[1]
+            img_temp = img_temp.resize((w, h))
+        
+        org = np.array(img_temp)
 
         #plt.imsave(fname=out_eigvec, arr=eigvec, cmap='cividis')
         mask_color_compose(org, bipartition).save(out_lost)
