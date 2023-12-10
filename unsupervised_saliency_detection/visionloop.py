@@ -7,7 +7,6 @@ import config
 
 import cv2
 import einops
-import gradio as gr
 import numpy as np
 import torch
 import random
@@ -59,7 +58,11 @@ def get_tokencut_binary_map(img_pth, backbone,patch_size, tau, resize) :
     feat = backbone(tensor)[0]
 
     seed, bipartition, eigvec = tokencut.ncut(feat, [feat_h, feat_w], [patch_size, patch_size], [h,w], tau)
-    return bipartition, eigvec
+    
+    threshold_percentage = 0.05
+    is_significant = np.mean(bipartition > 0.99) >= threshold_percentage
+    
+    return bipartition, eigvec, is_significant
 
 def mask_color_compose(org, mask, mask_color = [173, 216, 230]) :
 
@@ -73,7 +76,7 @@ def mask_color_compose(org, mask, mask_color = [173, 216, 230]) :
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 ## input / output dir
-parser.add_argument('--out-dir', type=str, help='output directory')
+parser.add_argument('--out-dir', type=str, default='Test', help='output directory')
 
 parser.add_argument('--vit-arch', type=str, default='small', choices=['base', 'small'], help='which architecture')
 
@@ -92,12 +95,13 @@ parser.add_argument('--sigma-chroma', type=float, default=8, help='sigma chroma 
 
 parser.add_argument('--dataset', type=str, default=None, choices=['ECSSD', 'DUTS', 'DUT', None], help='which dataset?')
 
-parser.add_argument('--nb-vis', type=int, default=100, choices=[1, 200], help='nb of visualization')
+parser.add_argument('--nb-vis', type=int, default=1, choices=[1, 200], help='nb of visualization')
 
 parser.add_argument('--img-path', type=str, default=None, help='single image visualization')
 
-parser.add_argument('--resize', type=int, nargs='+', default=None, help='specify input resolution')
+parser.add_argument('--resize', type=int, nargs='+', default=[256, 256], help='specify input resolution')
 
+## args declared
 args = parser.parse_args()
 print (args)
 
@@ -150,43 +154,47 @@ print(args.dataset)
 if args.out_dir is not None and not os.path.exists(args.out_dir) :
     os.mkdir(args.out_dir)
 
+# Image path: img_list
 if args.img_path is not None:
     args.nb_vis = 1
     img_list = [args.img_path]
 else:
     img_list = sorted(os.listdir(args.img_dir))
 
-count_vis = 0
-mask_lost = []
-mask_bfs = []
-gt = []
-for img_name in tqdm(img_list) :
-    if args.img_path is not None:
+def tokencutting (img_path):
+    # Image path: img_list
+    img_list = [img_path]
+    
+    mask_lost = []
+    mask_bfs = []
+    gt = []
+    for img_name in tqdm(img_list) :
         img_pth = img_name
         img_name = img_name.split("/")[-1]
         print(img_name)
-    else:
-        img_pth = os.path.join(args.img_dir, img_name)
-    
-    # print(img_pth)
-    bipartition, eigvec = get_tokencut_binary_map(img_pth, backbone, args.patch_size, args.tau, args.resize)
-    mask_lost.append(bipartition)
+        
+        # print(img_pth)
+        bipartition, eigvec, is_significant = get_tokencut_binary_map(img_pth, backbone, args.patch_size, args.tau, args.resize)
+        mask_lost.append(bipartition)
+        
+        if not is_significant:
+            return None
 
-    output_solver, binary_solver = bilateral_solver.bilateral_solver_output(img_pth, bipartition, sigma_spatial = args.sigma_spatial, sigma_luma = args.sigma_luma, sigma_chroma = args.sigma_chroma, resize=args.resize)
-    mask1 = torch.from_numpy(bipartition).cuda('cuda:1')
-    mask2 = torch.from_numpy(binary_solver).cuda('cuda:1')
-    if metric.IoU(mask1, mask2) < 0.5:
-        binary_solver = binary_solver * -1
-    mask_bfs.append(output_solver)
+        output_solver, binary_solver = bilateral_solver.bilateral_solver_output(img_pth, bipartition, sigma_spatial = args.sigma_spatial, sigma_luma = args.sigma_luma, sigma_chroma = args.sigma_chroma, resize=args.resize)
+        mask1 = torch.from_numpy(bipartition).cuda('cuda:1')
+        mask2 = torch.from_numpy(binary_solver).cuda('cuda:1')
+        if metric.IoU(mask1, mask2) < 0.5:
+            binary_solver = binary_solver * -1
+        mask_bfs.append(output_solver)
 
-    if args.gt_dir is not None :
-        mask_gt = np.array(Image.open(os.path.join(args.gt_dir, img_name.replace('.jpg', '.png'))).convert('L'))
-        gt.append(mask_gt)
+        if args.gt_dir is not None :
+            mask_gt = np.array(Image.open(os.path.join(args.gt_dir, img_name.replace('.jpg', '.png'))).convert('L'))
+            gt.append(mask_gt)
 
-    if count_vis != args.nb_vis :
+
         print(f'args.out_dir: {args.out_dir}, img_name: {img_name}')
         out_name = os.path.join(args.out_dir, img_name)
-        out_lost = os.path.join(args.out_dir, img_name.replace('.jpg', '_tokencut.jpg'))
+        # out_lost = os.path.join(args.out_dir, img_name.replace('.jpg', '_tokencut.jpg'))
         out_bfs = os.path.join(args.out_dir, img_name.replace('.jpg', '_tokencut_bfs.jpg'))
         #out_eigvec = os.path.join(args.out_dir, img_name.replace('.jpg', '_tokencut_eigvec.jpg'))
 
@@ -194,34 +202,20 @@ for img_name in tqdm(img_list) :
         # org = np.array(Image.open(img_pth).convert('RGB'))
         
         img_temp = Image.open(img_pth).convert('RGB') 
-        if args.resize is not None:
-            h = args.resize[0]
-            w = args.resize[1]
-            img_temp = img_temp.resize((w, h))
         
         org = np.array(img_temp)
+        
+        binary_solver_image = Image.fromarray(binary_solver)
+        resized_binary_solver = binary_solver_image.resize(img_temp.size, Image.NEAREST)
+        binary_solver_resized = np.array(resized_binary_solver)
 
-        #plt.imsave(fname=out_eigvec, arr=eigvec, cmap='cividis')
-        mask_color_compose(org, bipartition).save(out_lost)
-        mask_color_compose(org, binary_solver).save(out_bfs)
+        mask_color_compose(org, binary_solver_resized).save(out_bfs)
         if args.gt_dir is not None :
             out_gt = os.path.join(args.out_dir, img_name.replace('.jpg', '_gt.jpg'))
             mask_color_compose(org, mask_gt).save(out_gt)
+    
+    return binary_solver_resized
 
-
-        count_vis += 1
-    else :
-        continue
-
-if args.gt_dir is not None and args.img_path is None:
-    print ('TokenCut evaluation:')
-    print (metric.metrics(mask_lost, gt))
-    print ('\n')
-
-    print ('TokenCut + bilateral solver evaluation:')
-    print (metric.metrics(mask_bfs, gt))
-    print ('\n')
-    print ('\n')
 
 
 
@@ -250,7 +244,7 @@ def process(input_image_and_mask, prompt, a_prompt, n_prompt, num_samples, image
         img_raw = resize_image(input_image, image_resolution).astype(np.float32)
         H, W, C = img_raw.shape
 
-        mask_pixel = cv2.resize(input_mask[:, :, 0], (W, H), interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
+        mask_pixel = cv2.resize(input_mask, (W, H), interpolation=cv2.INTER_LINEAR).astype(np.float32) / 255.0
         mask_pixel = cv2.GaussianBlur(mask_pixel, (0, 0), mask_blur)
 
         mask_latent = cv2.resize(mask_pixel, (W // 8, H // 8), interpolation=cv2.INTER_AREA)
@@ -318,49 +312,56 @@ def process(input_image_and_mask, prompt, a_prompt, n_prompt, num_samples, image
 # Variables
 maxloops = 5
 output_filename = 'output_with_mask.jpg'
-input_filename = 'Grumman.jpeg'
+input_filename = args.img_path
 
 print("Entering Loop")
 
 prompt = ''
-a_prompt = 'zero creativity'
+a_prompt = 'absolutely zero creativity, zero imagination'
 n_prompt = ''
 num_samples = 1
 
+# Create masks directory if not exists
+os.makedirs('./masks', exist_ok=True)
+os.makedirs('./results', exist_ok=True)
 
 # Loop for processing each mask
 for i in range(maxloops):
     print(f"Iteration: {i + 1}")
-
-
     
-    # print("Lowest_mi_mask Shape: ", lowest_mi_mask['segmentation'].shape)
+    image = cv2.imread(input_filename)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    print("Token Cutting")
+    mask = tokencutting(img_path=input_filename)
+    if mask is None:
+        print("No more significant mask found. Finishing Process.")
+        break
+    print(type(mask))
+    print(mask.shape)
     
     
-    # np.save("lowest_mi_mask.npy", lowest_mi_mask['segmentation'])
+    mask = mask.astype(np.uint8)*255
     
-    # lowest_mi_mask['segmentation'] = lowest_mi_mask['segmentation'].astype(np.uint8)*255
+    kernel = np.ones((20,20), np.uint8)  # Adjust the kernel size as needed
+    dilated_mask = cv2.dilate(mask, kernel, iterations=5)
     
-    cv2.imwrite('justlmi.png', lowest_mi_mask['segmentation'])
+    cv2.imwrite(f'./masks/justlmi{i+1}.png', dilated_mask)
     
-    print(f'lmi {i + 1}')
-
-    # Prepare mask for inpainting
-    mask_for_inpainting = lowest_mi_mask['segmentation']
-    cv2.imwrite("original_image.png", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    print(f'lmi {i + 1} saved')
 
     # Inpaint using the selected mask
     print("Begin Inpainting")
-    with torch.no_grad():  # Use no_grad() for inference
-        inpainted_result = process({'image': image, 'mask': mask_for_inpainting}, 
-                                   prompt, a_prompt, n_prompt, num_samples, 
-                                   512, 50, False, 1.0, 7.0, 12345, 1.0, 5.0)
+    inpainted_result = process({'image': image, 'mask': dilated_mask}, 
+                                prompt, a_prompt, n_prompt, num_samples, 
+                                512, 50, False, 1.0, 7.0, 12345, 1.0, 5.0)
     print("Finished inpainting")
 
 
     # Save the image
     print("Saving File")
-    
-    cv2.imwrite(f'output_iteration_{i + 1}.png', cv2.cvtColor(inpainted_result[1], cv2.COLOR_RGB2BGR))
+    cv2.imwrite(f'./results/output_iteration_{i + 1}.png', cv2.cvtColor(inpainted_result[1], cv2.COLOR_RGB2BGR))
+    input_filename = f'./results/output_iteration_{i + 1}.png'
+    input_filenamet = os.path.abspath(input_filename)
     print(f"Process completed for iteration {i + 1}")
 

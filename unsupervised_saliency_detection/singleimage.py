@@ -168,22 +168,31 @@ for img_name in tqdm(img_list) :
         out_name = os.path.join(args.out_dir, img_name)
         out_lost = os.path.join(args.out_dir, img_name.replace('.jpg', '_tokencut.jpg'))
         out_bfs = os.path.join(args.out_dir, img_name.replace('.jpg', '_tokencut_bfs.jpg'))
+        print("Out_lost: " + out_lost)
+        print("Out_bfs: " + out_bfs)
         #out_eigvec = os.path.join(args.out_dir, img_name.replace('.jpg', '_tokencut_eigvec.jpg'))
 
         copyfile(img_pth, out_name)
         # org = np.array(Image.open(img_pth).convert('RGB'))
         
         img_temp = Image.open(img_pth).convert('RGB') 
-        if args.resize is not None:
-            h = args.resize[0]
-            w = args.resize[1]
-            img_temp = img_temp.resize((w, h))
+        # if args.resize is not None:
+        #     h = args.resize[0]
+        #     w = args.resize[1]
+        #     img_temp = img_temp.resize((w, h))
         
         org = np.array(img_temp)
+        # bipartition_image = Image.fromarray(bipartition)
+        # resized_bipartition = bipartition_image.resize(img_temp.size, Image.NEAREST)
+        # bipartition_resized = np.array(resized_bipartition)
+        
+        binary_solver_image = Image.fromarray(binary_solver)
+        resized_binary_solver = binary_solver_image.resize(img_temp.size, Image.NEAREST)
+        binary_solver_resized = np.array(resized_binary_solver)
 
         #plt.imsave(fname=out_eigvec, arr=eigvec, cmap='cividis')
-        mask_color_compose(org, bipartition).save(out_lost)
-        mask_color_compose(org, binary_solver).save(out_bfs)
+        # mask_color_compose(org, bipartition_resized).save(out_lost)
+        mask_color_compose(org, binary_solver_resized).save(out_bfs)
         if args.gt_dir is not None :
             out_gt = os.path.join(args.out_dir, img_name.replace('.jpg', '_gt.jpg'))
             mask_color_compose(org, mask_gt).save(out_gt)
